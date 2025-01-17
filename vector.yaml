@@ -91,6 +91,8 @@ sinks:
     type: opentelemetry
     inputs: [ isolate-otel-envelope ]
     protocol:
+      batch:
+        max_events: 1
       type: http
       uri: "$uri"
       method: post
