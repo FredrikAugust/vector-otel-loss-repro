@@ -29,10 +29,10 @@ transforms:
         },
         "scopeLogs": [{
           "scope": {
-            "name": ""
           },
           "logRecords": [{
             "timeUnixNano": to_unix_timestamp(now(), unit: "nanoseconds"),
+            "observedTimeUnixNano": to_unix_timestamp(now(), unit: "nanoseconds"),
             "body": {
               "stringValue": .message
             },
@@ -86,7 +86,7 @@ sinks:
     encoding:
       codec: json
       json:
-        pretty: true
+        pretty: false
   loki-otel:
     type: opentelemetry
     inputs: [ isolate-otel-envelope ]
