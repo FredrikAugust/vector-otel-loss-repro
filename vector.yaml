@@ -1,0 +1,108 @@
+data_dir: ./vector-data-dir
+api:
+  enabled: true
+  address: 127.0.0.1:8686
+  playground: true
+sources:
+  vector:
+    type: file
+    include: [ ./*.log ]
+    ignore_checkpoints: true
+transforms:
+  otel:
+    type: remap
+    inputs: [ vector ]
+    source: |
+      . = parse_json!(.message)
+      # Bootstrap structure
+      .resourceLogs = [{
+        "resource": {
+          "attributes": [
+            {"key": "k8s.cluster.name", "value": {"stringValue": "${CLUSTER_ENVIRONMENT}"}},
+            {"key": "k8s.container.name", "value": {"stringValue": .kubernetes.container_name}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": .kubernetes.pod_namespace}},
+            {"key": "k8s.pod.name", "value": {"stringValue": .kubernetes.pod_name}},
+            {"key": "service.instance.id", "value": {"stringValue": .kubernetes.pod_uid}},
+            {"key": "service.name", "value": {"stringValue": .kubernetes.pod_labels."app.kubernetes.io/name"}},
+            {"key": "service.version", "value": {"stringValue": .kubernetes.container_image}}
+          ]
+        },
+        "scopeLogs": [{
+          "scope": {
+            "name": ""
+          },
+          "logRecords": [{
+            "timeUnixNano": to_unix_timestamp(now(), unit: "nanoseconds"),
+            "body": {
+              "stringValue": .message
+            },
+            "attributes": []
+          }]
+        }]
+      }]
+  isolate-otel-envelope:
+    type: remap
+    inputs: [ routes._unmatched, backend-parsed-logs ]
+    source: |
+      . = { "resourceLogs": .resourceLogs }
+  routes:
+    type: route
+    inputs: [ otel ]
+    route:
+      backend: '.kubernetes.container_name == "init" && .kubernetes.pod_namespace == "init"'
+  backend-parsed-logs:
+    type: remap
+    inputs: [ routes.backend ]
+    source: |
+      parsed_message, err = parse_json(.resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue)
+      if err != null {
+          log("Failed to parse following as JSON: " + string!(.resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue))
+          parsed_message = {"msg": .resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue}
+      }
+      .resourceLogs[0].scopeLogs[0].logRecords[0].body.stringValue = parsed_message.msg
+      .resourceLogs[0].scopeLogs[0].logRecords[0].severityText = "INFO"
+      if parsed_message.data != null {
+        data = flatten!(parsed_message.data)
+        for_each(data) -> |key, value| {
+          .resourceLogs[0].scopeLogs[0].logRecords[0].attributes = push(array!(.resourceLogs[0].scopeLogs[0].logRecords[0].attributes), {
+            "key": "data." + string(key),
+            "value": {"stringValue": to_string!(value)}
+          })
+        }
+      } else if parsed_message.error != null {
+        error = flatten!(parsed_message.error)
+        for_each(error) -> |key, value| {
+          .resourceLogs[0].scopeLogs[0].logRecords[0].attributes = push(array!(.resourceLogs[0].scopeLogs[0].logRecords[0].attributes), {
+            "key": "error." + string(key),
+            "value": {"stringValue": to_string!(value)}
+          })
+        }
+      }
+sinks:
+  stdout:
+    type: console
+    inputs:
+      - isolate-otel-envelope
+    encoding:
+      codec: json
+      json:
+        pretty: true
+  loki-otel:
+    type: opentelemetry
+    inputs: [ isolate-otel-envelope ]
+    protocol:
+      type: http
+      uri: "$uri"
+      method: post
+      request:
+        headers:
+          content-type: application/json
+      encoding:
+        codec: json
+      framing:
+        method: newline_delimited
+      auth:
+        strategy: basic
+        user: '$user'
+        password: >-
+          ${password:?missing password}
