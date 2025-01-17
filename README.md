@@ -10,4 +10,4 @@ uri \
 vector -c vector.yaml
 ```
 
-You will see that only the first message gets ingested
+You will see that only the first message gets ingested if you remove the `protocol.batch.max_events` line
